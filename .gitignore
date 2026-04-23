@@ -1,0 +1,26 @@
+# Visual Studio
+.vs/
+Debug/
+Release/
+Release_AVX2/
+x64/
+x86/
+*.user
+*.aps
+*.pdb
+*.suo
+*.orig
+*.log
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.sdf
+*.opensdf
+*.ipch
+*.cache
+
+# Archives & Backups
+*.rar
+*.zip
+*.7z
+*.bak
