@@ -1,3 +1,5 @@
+/build/
+/install/
 # Visual Studio
 .vs/
 Debug/
@@ -24,3 +26,6 @@ x86/
 *.zip
 *.7z
 *.bak
+
+# Generated from the shared FormatValidation source during CMake configuration.
+/.clang-format
