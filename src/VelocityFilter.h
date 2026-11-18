@@ -1,5 +1,5 @@
 #pragma once
-#include <math.h>
+#include <cmath>
 
 // Filter sensitivity constants (speed coefficients)
 const float VELO_FILTER_SPEED_BASE = 16.25f;   // Base smoothness (equivalent to 0.15 at 100 FPS)
@@ -22,13 +22,22 @@ public:
     }
 
     float Update(float flRawVelocity, float flFrameTime) {
-        if (m_bFirstUpdate || flFrameTime <= 0) {
-            m_flCurrentVelocity = flRawVelocity;
-            m_bFirstUpdate = false;
+        // The first sample (and a zero-length step) snaps to the target.
+        if (m_bFirstUpdate || flFrameTime <= 0.0f) {
+            if (std::isfinite(flRawVelocity)) {
+                m_flCurrentVelocity = flRawVelocity;
+                m_bFirstUpdate = false;
+            }
             return m_flCurrentVelocity;
         }
 
-        float flDelta = fabsf(flRawVelocity - m_flCurrentVelocity);
+        // A non-finite sample (NaN/Inf) must not poison the filter state:
+        // std::fabs(NaN) is NaN, every threshold comparison turns false and
+        // the stored velocity stays NaN forever.
+        if (!std::isfinite(flRawVelocity) || !std::isfinite(flFrameTime))
+            return m_flCurrentVelocity;
+
+        float flDelta = std::fabs(flRawVelocity - m_flCurrentVelocity);
         float flSpeed = VELO_FILTER_SPEED_BASE;
 
         if (flDelta > VELO_THRESHOLD_SNAP) {
@@ -38,7 +47,7 @@ public:
         }
 
         // Time-independent lerp: current + (target - current) * (1 - exp(-speed * dt))
-        float flFactor = 1.0f - expf(-flSpeed * flFrameTime);
+        float flFactor = 1.0f - std::exp(-flSpeed * flFrameTime);
         m_flCurrentVelocity = m_flCurrentVelocity + (flRawVelocity - m_flCurrentVelocity) * flFactor;
         
         return m_flCurrentVelocity;
