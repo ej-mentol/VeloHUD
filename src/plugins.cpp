@@ -29,10 +29,19 @@ void VGUI2Extension_Init(HMODULE hModule) {
 }
 
 void DllLoadNotification(mh_load_dll_notification_context_t* ctx) {
+    if (!ctx->BaseDllName || _wcsicmp(ctx->BaseDllName, L"VGUI2Extension.dll") != 0)
+        return;
+
     if (ctx->flags & LOAD_DLL_NOTIFICATION_IS_LOAD) {
-        if (ctx->BaseDllName && !_wcsicmp(ctx->BaseDllName, L"VGUI2Extension.dll")) {
-            VGUI2Extension_Init(ctx->hModule);
-        }
+        VGUI2Extension_Init(ctx->hModule);
+    }
+    else if (ctx->flags & LOAD_DLL_NOTIFICATION_IS_UNLOAD) {
+        // The module is detaching: drop every pointer into it. The surface is
+        // re-acquired on the next load, and the font handle belongs to the old
+        // VGUI2 instance, so it must not survive either.
+        g_pVGUI2Extension = nullptr;
+        g_pSurface = nullptr;
+        VeloHUD_ResetFont();
     }
 }
 
@@ -68,7 +77,7 @@ public:
     }
 
     const char *GetVersion(void) override {
-        return "VeloHUD 1.2";
+        return VELOHUD_VERSION;
     }
 };
 
