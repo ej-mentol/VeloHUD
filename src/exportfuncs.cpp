@@ -22,6 +22,33 @@ float g_flVerticalVelocity = 0.0f;
 float g_flMaxVertical = 0.0f;
 float g_flMinVertical = 0.0f;
 
+// Diagnostic for the "how often does the engine call HUD_PlayerMove" question.
+// Compiled only with VELOHUD_DIAG; see the README diagnostics section.
+#ifdef VELOHUD_DIAG
+static int g_iPlayerMoveCalls = 0;
+static long long g_llPlayerMoveCallsTotal = 0;
+static int g_iPlayerMoveCallsPeak = 0;
+static int g_iRedrawFrames = 0;
+static int g_iRedrawZeroMoveFrames = 0;
+static double g_flLastRedrawTime = -1.0;
+static double g_flPlayerMoveFrametimeSum = 0.0;
+static double g_flPlayerMoveFrametimeTotal = 0.0;
+static double g_flRedrawTimeTotal = 0.0;
+
+static void ResetDiagnostics()
+{
+	g_iPlayerMoveCalls = 0;
+	g_llPlayerMoveCallsTotal = 0;
+	g_iPlayerMoveCallsPeak = 0;
+	g_iRedrawFrames = 0;
+	g_iRedrawZeroMoveFrames = 0;
+	g_flLastRedrawTime = -1.0;
+	g_flPlayerMoveFrametimeSum = 0.0;
+	g_flPlayerMoveFrametimeTotal = 0.0;
+	g_flRedrawTimeTotal = 0.0;
+}
+#endif
+
 // VGUI2 resources
 vgui::HFont g_hFont = 0;
 int g_iLastFontSize = -1;
@@ -77,6 +104,10 @@ void velo_reset_max_f(void)
 	g_flMaxVelocity = 0.0f;
 	g_flMaxVertical = 0.0f;
 	g_flMinVertical = 0.0f;
+#ifdef VELOHUD_DIAG
+	// Also start a fresh measurement window without a map change.
+	ResetDiagnostics();
+#endif
 }
 
 static bool CvarIsOn(cvar_t* cvar)
@@ -149,6 +180,19 @@ void velo_help_f(void)
 	PrintFlag(velo_hide_vertical, "velo_hide_vertical", "(0/1, hide the vertical speed line)");
 	if (velo_color && velo_color->string)
 		VeloConPrintf("%-22s : \"%s\"  (R G B A, missing channels default to 180 180 180 255)\n", "velo_color", velo_color->string);
+#ifdef VELOHUD_DIAG
+	const double averagePlayerMoves = g_iRedrawFrames > 0
+		? static_cast<double>(g_llPlayerMoveCallsTotal) / g_iRedrawFrames : 0.0;
+	const double averagePlayerMoveDt = g_iRedrawFrames > 0
+		? g_flPlayerMoveFrametimeTotal / g_iRedrawFrames : 0.0;
+	const double averageRedrawDt = g_iRedrawFrames > 0
+		? g_flRedrawTimeTotal / g_iRedrawFrames : 0.0;
+	const double dtRatio = averageRedrawDt > 0.0 ? averagePlayerMoveDt / averageRedrawDt : 0.0;
+	VeloConPrintf("HUD_PlayerMove / frame   : avg %.2f, peak %d, zero-move %d/%d\n",
+		averagePlayerMoves, g_iPlayerMoveCallsPeak, g_iRedrawZeroMoveFrames, g_iRedrawFrames);
+	VeloConPrintf("HUD_PlayerMove dt/frame  : %.4f vs redraw %.4f (ratio %.2f)\n",
+		averagePlayerMoveDt, averageRedrawDt, dtRatio);
+#endif
 	VeloConPrintf("commands                 : velo_reset_max, velo_help\n");
 	VeloConPrintf("------------------------\n");
 }
@@ -217,6 +261,9 @@ int HUD_VidInit(void)
 	g_flMaxVertical      = 0.0f;
 	g_flMinVertical      = 0.0f;
 	g_Filter.Reset();
+#ifdef VELOHUD_DIAG
+	ResetDiagnostics();
+#endif
 	// The font handle is deliberately kept across VidInit: a video mode change
 	// restarts the game, so the module-unload callback already drops the handle
 	// together with the VGUI2 module, while a map change leaves the surface and
@@ -226,9 +273,17 @@ int HUD_VidInit(void)
 
 void HUD_PlayerMove(struct playermove_s* ppmove, int server)
 {
+#ifdef VELOHUD_DIAG
+	++g_iPlayerMoveCalls;
+#endif
 	gExportfuncs.HUD_PlayerMove(ppmove, server);
 	if (!ppmove)
 		return;
+
+#ifdef VELOHUD_DIAG
+	if (std::isfinite(ppmove->frametime) && ppmove->frametime > 0.0f)
+		g_flPlayerMoveFrametimeSum += ppmove->frametime;
+#endif
 
 	// A non-finite sample is ignored instead of being turned into 0: the filter
 	// already keeps its previous value, and the raw modes must not dip for one
@@ -273,6 +328,19 @@ static float ResolveDisplayedSpeed(float predictedRaw, float predictedFiltered, 
 
 int HUD_Redraw(float time, int intermission)
 {
+#ifdef VELOHUD_DIAG
+	// Snapshot before any return: a skipped frame must not leave calls behind
+	// for the next redraw to count, or the peak would be meaningless.
+	const int playerMoveCalls = g_iPlayerMoveCalls;
+	g_iPlayerMoveCalls = 0;
+	const double playerMoveFrametime = g_flPlayerMoveFrametimeSum;
+	g_flPlayerMoveFrametimeSum = 0.0;
+	const double now = time;
+	const double frameDt = g_flLastRedrawTime >= 0.0 ? now - g_flLastRedrawTime : 0.0;
+	const bool continuousFrame = frameDt > 0.0 && frameDt <= 0.25;
+	g_flLastRedrawTime = now;
+#endif
+
 	const int result = gExportfuncs.HUD_Redraw(time, intermission);
 
 	if (intermission || GetVelocityMode() == 0)
@@ -281,6 +349,22 @@ int HUD_Redraw(float time, int intermission)
 	cl_entity_t* local = gEngfuncs.GetLocalPlayer();
 	if (!local || local->index <= 0)
 		return result;
+
+#ifdef VELOHUD_DIAG
+	// Only continuous frames that actually render the HUD: a console pause or a
+	// loading gap must not turn into one huge "peak".
+	if (continuousFrame)
+	{
+		g_llPlayerMoveCallsTotal += playerMoveCalls;
+		g_flPlayerMoveFrametimeTotal += playerMoveFrametime;
+		g_flRedrawTimeTotal += frameDt;
+		++g_iRedrawFrames;
+		if (playerMoveCalls == 0)
+			++g_iRedrawZeroMoveFrames;
+		else if (playerMoveCalls > g_iPlayerMoveCallsPeak)
+			g_iPlayerMoveCallsPeak = playerMoveCalls;
+	}
+#endif
 
 	UpdateHUDParams();
 	if (!g_pSurface || !g_hFont)
